@@ -1,0 +1,165 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  ADMIN
+  SECURITY_LEAD
+  DEVELOPER
+  AUDITOR
+}
+
+enum FindingSeverity {
+  CRITICAL
+  HIGH
+  MEDIUM
+  LOW
+  INFO
+}
+
+enum FindingStatus {
+  OPEN
+  IN_PROGRESS
+  RESOLVED
+  IGNORED
+  FALSE_POSITIVE
+}
+
+enum ComplianceFramework {
+  DPDP_ACT
+  RBI_CYBERSECURITY
+  ISO_27001
+  SOC_2
+  CUSTOM
+}
+
+enum DeploymentStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  DEPLOYED
+  ROLLED_BACK
+}
+
+model User {
+  id            String   @id @default(cuid())
+  email         String   @unique
+  password      String
+  name          String
+  role          Role     @default(DEVELOPER)
+  services      String[] // Services this user owns
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  approvals     Approval[]
+  @@map("users")
+}
+
+model Finding {
+  id              String          @id @default(cuid())
+  tool            String          // trivy, semgrep, trufflehog, npm-audit
+  scanId          String
+  service         String
+  environment     String
+  severity        FindingSeverity
+  status          FindingStatus   @default(OPEN)
+  title           String
+  description     String
+  filePath        String?
+  lineNumber      Int?
+  cveId           String?
+  cvssScore       Float?
+  remediation     String?
+  resolvedAt      DateTime?
+  resolvedBy      String?
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  complianceMappings ComplianceMapping[]
+
+  @@index([service, environment])
+  @@index([severity, status])
+  @@map("findings")
+}
+
+model ComplianceMapping {
+  id              String              @id @default(cuid())
+  findingId       String
+  finding         Finding             @relation(fields: [findingId], references: [id])
+  framework       ComplianceFramework
+  controlId       String
+  controlTitle    String
+  clause          String?
+  riskScore       Int                 @default(50)
+  createdAt       DateTime            @default(now())
+
+  @@index([framework, controlId])
+  @@map("compliance_mappings")
+}
+
+model Deployment {
+  id              String          @id @default(cuid())
+  service         String
+  environment     String
+  version         String
+  commitSha       String
+  status          DeploymentStatus @default(PENDING)
+  requestedBy     String
+  requestedAt     DateTime        @default(now())
+  approvedBy      String?
+  approvedAt      DateTime?
+  rejectionReason String?
+  deployedAt      DateTime?
+  findingsCount   Int             @default(0)
+  criticalCount   Int             @default(0)
+  highCount       Int             @default(0)
+  exceptions      String[]        @default([])
+
+  approvals       Approval[]
+
+  @@index([service, environment])
+  @@index([status])
+  @@map("deployments")
+}
+
+model Approval {
+  id              String      @id @default(cuid())
+  deploymentId    String
+  deployment      Deployment  @relation(fields: [deploymentId], references: [id])
+  approverId      String
+  approver        User        @relation(fields: [approverId], references: [id])
+  decision        String      // approved, rejected, exception
+  comments        String?
+  createdAt       DateTime    @default(now())
+
+  @@index([deploymentId])
+  @@index([approverId])
+  @@map("approvals")
+}
+
+model ComplianceReport {
+  id              String          @id @default(cuid())
+  title           String
+  framework       ComplianceFramework
+  startDate       DateTime
+  endDate         DateTime
+  generatedBy     String
+  generatedAt     DateTime        @default(now())
+  findingsCount   Int
+  resolvedCount   Int
+  criticalCount   Int
+  highCount       Int
+  complianceScore Float
+  pdfUrl          String?
+
+  @@index([framework, startDate])
+  @@map("compliance_reports")
+}
