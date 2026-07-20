@@ -443,7 +443,7 @@ This is a demonstration project. Feel free to fork and adapt for your own learni
 
 ## 📄 License
 
-MIT License - Free to use for learning and portfolio purposes.
+Proprietary - All rights reserved.
 
 ---
 
