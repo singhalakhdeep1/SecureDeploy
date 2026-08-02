@@ -1,0 +1,79 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: syft-config
+  namespace: security
+data:
+  syft.yaml: |
+    output: json
+    scope: all-layers
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: syft-scan
+  namespace: security
+spec:
+  schedule: "0 4 * * *"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+          - name: syft
+            image: anchore/syft:latest
+            command:
+            - syft
+            - $(IMAGE_REF)
+            - --config=/etc/syft/syft.yaml
+            - --output
+            - json
+            - --file
+            - /output/sbom.json
+            env:
+            - name: IMAGE_REF
+              value: "your-registry/your-image:latest"
+            volumeMounts:
+            - name: config
+              mountPath: /etc/syft
+            - name: output
+              mountPath: /output
+          volumes:
+          - name: config
+            configMap:
+              name: syft-config
+          - name: output
+            emptyDir: {}
+          restartPolicy: OnFailure
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: syft-sa
+  namespace: security
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: syft-role
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - pods
+  verbs:
+  - get
+  - list
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: syft-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: syft-role
+subjects:
+- kind: ServiceAccount
+  name: syft-sa
+  namespace: security

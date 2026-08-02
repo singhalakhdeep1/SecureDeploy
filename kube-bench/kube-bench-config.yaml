@@ -1,0 +1,105 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kube-bench-config
+  namespace: security
+data:
+  config.yaml: |
+    skip:
+      - "1.1.20" # Skip specific checks
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: kube-bench
+  namespace: security
+spec:
+  schedule: "0 5 * * *"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          hostNetwork: true
+          containers:
+          - name: kube-bench
+            image: aquasec/kube-bench:latest
+            command:
+            - kube-bench
+            - --config=/config/config.yaml
+            - --json
+            - --output=/output/report.json
+            volumeMounts:
+            - name: config
+              mountPath: /config
+            - name: output
+              mountPath: /output
+            - name: var-lib-etcd
+              mountPath: /var/lib/etcd
+              readOnly: true
+            - name: var-lib-kubelet
+              mountPath: /var/lib/kubelet
+              readOnly: true
+            - name: etc-systemd
+              mountPath: /etc/systemd
+              readOnly: true
+            - name: etc-kubernetes
+              mountPath: /etc/kubernetes
+              readOnly: true
+            - name: usr-bin
+              mountPath: /usr/local/bin
+              readOnly: true
+          volumes:
+          - name: config
+            configMap:
+              name: kube-bench-config
+          - name: output
+            emptyDir: {}
+          - name: var-lib-etcd
+            hostPath:
+              path: /var/lib/etcd
+          - name: var-lib-kubelet
+            hostPath:
+              path: /var/lib/kubelet
+          - name: etc-systemd
+            hostPath:
+              path: /etc/systemd
+          - name: etc-kubernetes
+            hostPath:
+              path: /etc/kubernetes
+          - name: usr-bin
+            hostPath:
+              path: /usr/local/bin
+          restartPolicy: OnFailure
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kube-bench-sa
+  namespace: security
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kube-bench-role
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - pods
+  - nodes
+  verbs:
+  - get
+  - list
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kube-bench-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: kube-bench-role
+subjects:
+- kind: ServiceAccount
+  name: kube-bench-sa
+  namespace: security
