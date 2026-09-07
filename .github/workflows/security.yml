@@ -1,0 +1,81 @@
+name: Security Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  security-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image
+        run: |
+          docker build -t securedeploy:${{ github.sha }} -f backend/Dockerfile backend/
+
+      - name: Install Grype
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin
+
+      - name: Run Grype Vulnerability Scan
+        run: |
+          grype securedeploy:${{ github.sha }} --fail-on critical -o json > grype-results.json
+          cat grype-results.json
+
+      - name: Install Syft
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin
+
+      - name: Generate SBOM with Syft
+        run: |
+          syft securedeploy:${{ github.sha }} -o spdx-json > sbom.json
+          cat sbom.json
+
+      - name: Install OPA
+        run: |
+          curl -L -o opa https://openpolicyagent.org/downloads/latest/opa_linux_amd64
+          chmod +x opa
+          sudo mv opa /usr/local/bin/
+
+      - name: OPA Policy Check
+        run: |
+          opa eval --data opa/policies/ --input backend/Dockerfile "data.kubernetes.admission.deny" || true
+
+      - name: Upload SBOM as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: sbom.json
+
+      - name: Upload Grype results as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: grype-results
+          path: grype-results.json
+
+      - name: Install Trivy
+        run: |
+          curl -sfSL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
+
+      - name: Run Trivy Scan
+        run: |
+          trivy image securedeploy:${{ github.sha }} --severity CRITICAL,HIGH --exit-code 1
+
+      - name: Install Kube-bench
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/aquasecurity/kube-bench/main/install.sh | sh -s -- -b /usr/local/bin
+
+      - name: Run Kube-bench (if Kubernetes config exists)
+        run: |
+          if [ -f "kubernetes/deployment.yaml" ]; then
+            kube-bench --config-dir kubernetes/ || true
+          else
+            echo "No Kubernetes deployment found, skipping kube-bench"
+          fi
