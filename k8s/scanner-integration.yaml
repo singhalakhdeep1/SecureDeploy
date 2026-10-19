@@ -1,0 +1,20 @@
+# Connects the in-cluster scanners (grype/, syft/, kube-bench/) to SecureDeploy's webhook API.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: securedeploy-integration
+  namespace: security
+data:
+  SECUREDEPLOY_URL: "http://securedeploy-backend.securedeploy.svc.cluster.local:3001"
+  SERVICE_NAME: "your-service"
+  ENVIRONMENT: "production"
+  CLUSTER_NAME: "production-cluster"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: securedeploy-webhook
+  namespace: security
+type: Opaque
+stringData:
+  WEBHOOK_SECRET: "change-me-webhook-secret"

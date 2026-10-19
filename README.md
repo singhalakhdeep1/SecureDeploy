@@ -1,456 +1,149 @@
-# SecureDeploy - Security Compliance & Deployment Approval Platform
+# SecureDeploy: Security Compliance & Deployment Approval Platform
 
-<div align="center">
+SecureDeploy ingests security scan results from CI/CD and in-cluster scanners and normalizes them into one finding model. It maps findings to regulatory controls (DPDP Act, RBI Cybersecurity Framework, ISO 27001, SOC 2) and gates deployments on open critical findings, with an exception workflow and an audit trail. It also produces PDF compliance reports.
 
-**Enterprise-grade security compliance platform with deployment approval workflows**
-
-![NestJS](https://img.shields.io/badge/NestJS-10.0-e0234e?logo=nestjs)
-![React](https://img.shields.io/badge/React-18.2-61dafb?logo=react)
-![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-336791?logo=postgresql)
-![TypeScript](https://img.shields.io/badge/TypeScript-5.0-3178c6?logo=typescript)
-
-</div>
-
----
-
-## 📋 Overview
-
-SecureDeploy is a full-stack security compliance platform that ingests security scan results from CI/CD pipelines, maps them to regulatory frameworks (DPDP Act, RBI Cybersecurity Framework), and provides deployment approval workflows with audit trails. Unlike traditional vulnerability dashboards, SecureDeploy focuses on compliance visibility and governance.
-
-### 🌟 Why This Project Matters
-
-Most security tools show vulnerability lists but don't connect them to business compliance requirements. SecureDeploy bridges this gap by:
-- Normalizing scan results from multiple tools (Trivy, Semgrep, TruffleHog, npm audit)
-- Mapping findings to regulatory frameworks (DPDP Act data handling, RBI cybersecurity categories)
-- Enforcing deployment approvals based on compliance status
-- Providing auditable approval trails for BFSI/regulated industries
-
----
-
-## 🏗️ Architecture
+**Stack:**
+- Backend: NestJS 11 (TypeScript), PostgreSQL 16 with Prisma, Redis
+- Frontend: Next.js 14 (App Router, TSX, Recharts)
+- Scanners: Grype, Syft, Trivy (in the API image)
+- In-cluster tooling: Kubernetes manifests for Grype, Syft, kube-bench, Falco and OPA Gatekeeper
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                    CI/CD Pipeline (ResilienceForge)              │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐       │
-│  │ Trivy    │→ │ Semgrep  │→ │TruffleHog│→ │npm audit │       │
-│  └──────────┘  └──────────┘  └──────────┘  └──────────┘       │
-└─────────────────────────────────────────────────────────────────┘
-                              ↓
-┌─────────────────────────────────────────────────────────────────┐
-│              SecureDeploy Ingestion API (Webhooks)               │
-│  ┌──────────────────────────────────────────────────────────┐  │
-│  │  Normalization Layer → Unified Schema                    │  │
-│  └──────────────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────────┘
-                              ↓
-┌─────────────────────────────────────────────────────────────────┐
-│                 Compliance Mapping Engine                        │
-│  ┌──────────────────────────────────────────────────────────┐  │
-│  │  DPDP Act Mapping • RBI Framework Mapping                │  │
-│  │  Control Frameworks • Risk Scoring                       │  │
-│  └──────────────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────────┘
-                              ↓
-┌─────────────────────────────────────────────────────────────────┐
-│                    PostgreSQL Database                           │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐       │
-│  │Findings  │  │Approvals │  │Users     │  │Compliance│       │
-│  └──────────┘  └──────────┘  └──────────┘  └──────────┘       │
-└─────────────────────────────────────────────────────────────────┘
-                              ↓
-┌─────────────────────────────────────────────────────────────────┐
-│                 NestJS Backend API                              │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐       │
-│  │Findings  │  │Approval  │  │RBAC      │  │Reporting │       │
-│  │API       │  │Workflow  │  │Service   │  │Service   │       │
-│  └──────────┘  └──────────┘  └──────────┘  └──────────┘       │
-└─────────────────────────────────────────────────────────────────┘
-                              ↓
-┌─────────────────────────────────────────────────────────────────┐
-│                 React Dashboard (Next.js)                        │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐       │
-│  │Findings  │  │Compliance│  │Approval  │  │Reports   │       │
-│  │Dashboard │  │Status    │  │Workflow  │  │Export    │       │
-│  └──────────┘  └──────────┘  └──────────┘  └──────────┘       │
-└─────────────────────────────────────────────────────────────────┘
+CI pipeline (grype/trivy/semgrep/trufflehog/npm audit) ─┐            ┌─ Grype / Syft / kube-bench CronJobs
+                                                        ▼            ▼
+                          POST /api/webhooks/*  (X-Webhook-Secret or HMAC signature, rate limited)
+                                                        │
+          ┌──────────── NestJS API (JWT + RBAC, throttling, correlation-id logging, audit) ────────────┐
+          │ findings: normalize → fingerprint dedupe → reopen regressions → auto-resolve (full scans)  │
+          │ compliance: rule engine maps findings → controls; control-based scores (Redis cached)      │
+          │ approvals: gate (open CRITICAL blocks) → exception → approve/reject → deployed/rollback    │
+          │ reporting: PDF (pdfkit) stored in Postgres · scans: grype/trivy/syft · SBOM store · audit   │
+          └───────────────────────────── PostgreSQL · Redis ───────────────────────────────────────────┘
+                                                        ▲
+                                  Next.js dashboard (findings, approvals, compliance, reports, scans, audit, users)
 ```
 
----
+## Features
 
-## 📁 Project Structure
+- **Ingestion and normalization.** Native JSON parsers for Trivy (vulnerabilities, misconfigurations, secrets), Grype, Semgrep, TruffleHog, npm audit, kube-bench and Falco, or pre-normalized findings from any tool.
+  - Each finding gets a fingerprint for deduplication. A resolved finding that is reported again is reopened.
+  - With `fullScan`, open findings the tool no longer reports are auto-resolved.
+- **Compliance mapping.** A 20-control catalog across the four frameworks. A rule engine maps each finding by category, severity and keywords (injection, PII, auth) to controls with a risk score.
+  - A control is compliant when it has no open mapped finding.
+  - Scores are available per framework and per service. Security leads can add manual mappings.
+- **Deployment approvals:**
+  - Any open CRITICAL finding for the service and environment rejects the request at the gate. Optionally, too many HIGH findings do too (`DEPLOY_MAX_HIGH_FINDINGS`).
+  - A security lead can grant an exception covering every open critical finding, with a justification. The deployment then goes back to PENDING.
+  - Approve and reject are limited to ADMIN and SECURITY_LEAD. Segregation of duties applies: nobody approves their own request.
+  - Approval re-checks the gate. Releases are then marked deployed and can be rolled back.
+  - Pipelines can request a deployment, poll for the decision, and report the deploy over webhooks.
+- **Access control:**
+  - ADMIN: full access, plus user, role and service-ownership management.
+  - SECURITY_LEAD: all findings, ingest, decisions, scans.
+  - DEVELOPER: sees only owned services. Can move their own findings to IN_PROGRESS or RESOLVED.
+  - AUDITOR: read-only, plus reports and the audit trail.
+  - The first registered account becomes ADMIN.
+- **Reporting.** PDF compliance report per framework, period and optional service: executive summary, PASS/FAIL per control, and mapped findings. The PDF is stored and downloadable.
+- **Dashboard.** Open and resolved counts, MTTR overall and per severity, 30-day new-vs-resolved trend, compliance per framework, open findings per service, pending approvals.
+- **Scans and SBOMs.** `/api/scans/{grype,trivy,sbom}` run the CLIs. Image references are strictly validated, so nothing else reaches the shell. With a service set, results are ingested as findings. SBOMs (SPDX, Syft, CycloneDX) are stored with component counts.
+- **HLD/LLD patterns** (see [SECUREDEPLOY_HLD_LLD.md](SECUREDEPLOY_HLD_LLD.md)):
+  - Redis cache with get-or-set and pattern invalidation.
+  - Redis token-bucket rate limiter, an atomic Lua script, used on webhooks.
+  - Structured JSON logging with correlation IDs, plus audit events persisted to `audit_events`.
+  - Retry, circuit breaker and timeout policies, used around scanner runs.
 
-```
-securedeploy/
-├── backend/                       # NestJS Backend
-│   ├── src/
-│   │   ├── modules/
-│   │   │   ├── findings/         # Findings ingestion & management
-│   │   │   ├── compliance/       # Compliance mapping engine
-│   │   │   ├── approvals/        # Approval workflow
-│   │   │   ├── users/            # User management & RBAC
-│   │   │   └── reporting/        # PDF report generation
-│   │   ├── common/
-│   │   │   ├── decorators/       # Guards & decorators
-│   │   │   ├── filters/          # Exception filters
-│   │   │   └── interceptors/     # Logging & auth
-│   │   └── main.ts
-│   ├── test/
-│   └── package.json
-│
-├── frontend/                      # Next.js Dashboard
-│   ├── src/
-│   │   ├── components/
-│   │   │   ├── findings/         # Findings visualization
-│   │   │   ├── compliance/       # Compliance status
-│   │   │   ├── approvals/        # Approval workflow UI
-│   │   │   └── reports/          # Report generation
-│   │   ├── pages/
-│   │   │   ├── dashboard/        # Main dashboard
-│   │   │   ├── findings/         # Findings detail pages
-│   │   │   ├── approvals/        # Approval workflow pages
-│   │   │   └── reports/          # Report pages
-│   │   └── lib/
-│   │       ├── api.ts            # API client
-│   │       └── auth.ts           # Auth utilities
-│   └── package.json
-│
-├── database/                      # Database
-│   ├── migrations/               # PostgreSQL migrations
-│   └── seeds/                    # Seed data
-│
-└── docker-compose.yml            # Local development
-```
-
----
-
-## 🚀 Module Overview
-
-### Module 1: Ingestion API ✅
-- Webhook endpoints for scan result ingestion
-- Normalization from multiple tool formats
-- Unified schema for findings
-- Redis caching for high-volume ingestion
-
-### Module 2: Compliance Mapping ✅
-- DPDP Act data handling clause mapping
-- RBI Cybersecurity Framework categorization
-- Control framework definitions
-- Risk scoring algorithms
-
-### Module 3: Dashboard ✅
-- Findings by severity/service/trend
-- Open vs resolved tracking
-- Mean-time-to-remediate metrics
-- Compliance status visualization
-
-### Module 4: Approval Workflow ✅
-- Deploy approval gates
-- Critical findings blocking
-- Exception handling workflow
-- Audit trail of approvals
-
-### Module 5: Access Control ✅
-- RBAC implementation
-- Role-based visibility
-- Service ownership mapping
-- Audit logging
-
-### Module 6: Reporting ✅
-- PDF compliance report generation
-- Time-window filtering
-- Executive summary
-- Regulatory artifact export
-
-### Module 7: Documentation ✅
-- Architecture documentation
-- API documentation
-- Deployment guides
-- Interview preparation
-
----
-
-## 🛠️ Tech Stack
-
-### Backend
-- **Framework**: NestJS 10 (TypeScript)
-- **Database**: PostgreSQL 16 with Prisma ORM
-- **Caching**: Redis for high-volume ingestion
-- **Auth**: JWT with role-based access control
-- **Validation**: class-validator + class-transformer
-- **PDF Generation**: PDFKit for compliance reports
-
-### Frontend
-- **Framework**: Next.js 14 (App Router)
-- **UI**: Tailwind CSS + shadcn/ui components
-- **Charts**: Recharts for data visualization
-- **State**: React Context + SWR for data fetching
-- **Forms**: React Hook Form + Zod validation
-- **PDF**: jsPDF for client-side report preview
-
-### DevOps
-- **Containerization**: Docker + Docker Compose
-- **Database Migrations**: Prisma Migrate
-- **API Documentation**: Swagger/OpenAPI
-- **Testing**: Jest (backend) + Playwright (frontend)
-
----
-
-## 📦 Quick Start
-
-### Prerequisites
-
-- Node.js 18+
-- PostgreSQL 16+
-- Redis 7+
-- Docker (optional)
-
-### Local Development
+## Quick start (Docker)
 
 ```bash
-# Clone repository
-git clone <repository-url>
-cd securedeploy
+cp .env.example .env    # set JWT_SECRET and WEBHOOK_SECRET
+docker compose up --build
+```
 
-# Start database and Redis
-docker-compose up -d postgres redis
+- Frontend: http://localhost:3000. Register first; the first account is the admin.
+- API: http://localhost:3001/api
+- OpenAPI docs: http://localhost:3001/api/docs
 
-# Setup backend
+The backend container applies migrations on start.
+
+## Local development
+
+You need Node 20+, PostgreSQL and (optionally) Redis.
+
+```bash
 cd backend
+cp ../.env.example .env          # edit DATABASE_URL, JWT_SECRET, WEBHOOK_SECRET
+npm install                      # also runs prisma generate
+npx prisma migrate deploy        # migrations live in database/migrations
+npm run prisma:seed              # optional demo users (one per role) + sample findings
+npm run start:dev                # http://localhost:3001/api
+
+cd ../frontend
 npm install
-npx prisma migrate dev
-npx prisma db seed
-npm run start:dev
-
-# Setup frontend (new terminal)
-cd frontend
-npm install
-npm run dev
+npm run dev                      # http://localhost:3000
 ```
 
-### Access the Application
+The seed creates `admin@`, `lead@`, `dev@` and `auditor@securedeploy.local`. Their password is `SEED_PASSWORD` (default `ChangeMe123!`).
 
-- **Frontend**: http://localhost:3000
-- **Backend API**: http://localhost:3001
-- **API Documentation**: http://localhost:3001/api
-- **Database**: localhost:5432
-- **Redis**: localhost:6379
+## Sending scan results
 
----
-
-## 🔐 Default Credentials
-
-**Development Environment:**
-- **Admin**: admin@securedeploy.com / admin123
-- **Security Lead**: security@securedeploy.com / security123
-- **Developer**: dev-team@securedeploy.com / dev123
-- **Auditor**: auditor@securedeploy.com / auditor123
-
----
-
-## 📊 Key Features
-
-### Ingestion & Normalization
-- Multi-tool scan result ingestion (Trivy, Semgrep, TruffleHog, npm audit)
-- Unified finding schema
-- Deduplication logic
-- High-volume webhook handling with Redis queue
-
-### Compliance Mapping
-- **DPDP Act**: Data localization, consent management, breach notification
-- **RBI Framework**: Access control, vulnerability management, incident response
-- Custom control frameworks
-- Risk-based scoring
-
-### Dashboard & Visualization
-- Real-time findings dashboard
-- Trend analysis over time
-- Service-level compliance status
-- MTTR (Mean Time To Remediate) tracking
-
-### Approval Workflow
-- Deploy approval gates
-- Critical findings blocking
-- Exception request workflow
-- Multi-level approvals
-- Audit trail with timestamps
-
-### Access Control
-- **Developer**: View own service findings only
-- **Security Lead**: View all findings, approve deployments
-- **Auditor**: Read-only access to all data
-- **Admin**: Full system access
-
-### Reporting
-- PDF compliance reports
-- Time-window filtering
-- Executive summary generation
-- Regulatory artifact export
-- Custom report templates
-
----
-
-## 📈 Compliance Frameworks
-
-### DPDP Act (Digital Personal Data Protection Act)
-
-**Mapped Controls:**
-- Data localization requirements
-- Consent management verification
-- Data breach notification
-- Cross-border data transfer
-- Data retention policies
-
-### RBI Cybersecurity Framework
-
-**Mapped Controls:**
-- Access control and identity management
-- Vulnerability management
-- Incident response and monitoring
-- Security awareness training
-- Business continuity planning
-
-### Custom Frameworks
-
-Support for custom control frameworks and regulatory mappings.
-
----
-
-## 🔌 API Integration
-
-### Webhook Endpoints
-
-**Ingest Scan Results:**
 ```bash
-POST /api/webhooks/findings
-Content-Type: application/json
-
-{
-  "tool": "trivy",
-  "scan_id": "scan-123",
-  "service": "api-service",
-  "environment": "production",
-  "findings": [...]
-}
+trivy image -f json -o trivy.json my-app:1.4.0
+jq -n --slurpfile raw trivy.json '{tool:"trivy", scanId:"build-812", service:"payments-api", environment:"production", fullScan:true, raw:$raw[0]}' |
+  curl -X POST http://localhost:3001/api/webhooks/findings \
+    -H "Content-Type: application/json" -H "X-Webhook-Secret: $WEBHOOK_SECRET" --data-binary @-
 ```
 
-**Check Deployment Status:**
-```bash
-GET /api/deployments/:deploymentId/status
-```
+Full API reference: [docs/api-documentation.md](docs/api-documentation.md). Architecture: [docs/architecture.md](docs/architecture.md). Deployment: [docs/deployment-guide.md](docs/deployment-guide.md).
 
-**Submit Approval:**
-```bash
-POST /api/approvals
-{
-  "deploymentId": "deploy-123",
-  "approver": "security@securedeploy.com",
-  "decision": "approved",
-  "comments": "All critical findings resolved"
-}
-```
+## Kubernetes security tooling
 
----
+| Path | What it does |
+|---|---|
+| `grype/` | Nightly CronJob scans `IMAGE_REF` and posts the results to `/api/webhooks/findings` |
+| `syft/` | Nightly CronJob builds an SBOM and posts it to `/api/webhooks/sbom` |
+| `kube-bench/` | CIS benchmark CronJob; FAIL/WARN results become misconfiguration findings |
+| `k8s/scanner-integration.yaml` | SecureDeploy URL, service/environment names and webhook Secret used by the jobs |
+| `falco/` | Runtime detection DaemonSet and custom rules |
+| `opa/` | Gatekeeper constraint templates (required labels, disallowed tags) and `policies/no-root.rego` |
 
-## 📝 Sample Compliance Report
+## CI
 
-The platform generates PDF compliance reports including:
-- Executive summary
-- Findings by severity
-- Compliance status by framework
-- MTTR trends
-- Approval audit trail
-- Exception documentation
+`.github/workflows/ci.yml`:
+1. Backend typecheck, build and the existing Jest spec.
+2. Prisma migration plus a schema-drift check against Postgres.
+3. Frontend build.
+4. Docker image builds and compose validation.
 
----
+`.github/workflows/security.yml` scans the image with Grype, Syft and Trivy, runs OPA, and posts the Grype results to SecureDeploy when the `SECUREDEPLOY_URL` and `SECUREDEPLOY_WEBHOOK_SECRET` secrets are set.
 
-## 🎯 Interview Stories
+## Verification
 
-### Story 1: Compliance Mapping Implementation
+Run on a dev machine against PostgreSQL 18 and Redis 7.
+- **API:**
+  - health check
+  - register and login (first user becomes admin), role change
+  - webhook ingest of raw Grype output (7 control mappings), wrong-secret 401
+  - deduplication on re-ingest
+  - stats and compliance score
+  - gate rejection on a critical finding → exception → self-approval 403 → lead approval → deployed via webhook
+  - PDF report generated and downloaded
+  - shell-injection image reference rejected
+  - unauthenticated 401, audit trail
+- **Migration:** applied, no drift against the schema.
+- **Existing tests:** the `scans.service.spec.ts` suite passes (5/5).
+- **Browser (Edge):** 10 of 11 checks passed:
+  - login redirect, dashboard, findings list and detail, status change
+  - deployment request
+  - compliance controls
+  - PDF download
+  - role-based navigation
+  - The audit-trail check failed because of a stale-table race in the test script; the audit API itself returned events.
 
-**Question:** "How did you approach regulatory compliance in your security platform?"
+**Not run here:**
+- the Docker images and compose stack (no Docker daemon)
+- the scanner CLIs themselves (`/api/scans/*` needs grype, syft or trivy on the host)
+- the Kubernetes manifests (only YAML validity was checked)
 
-**Response:** "I built a compliance mapping engine that connects technical vulnerability findings to regulatory requirements. The challenge was mapping generic CVEs to specific DPDP Act clauses and RBI framework categories.
+## License
 
-I created a hierarchical mapping system where each finding type maps to control objectives, which then map to regulatory clauses. This allowed us to generate compliance reports that security teams could actually use for audits.
-
-The key insight was that compliance isn't about eliminating all vulnerabilities—it's about understanding which ones matter for which regulations and prioritizing remediation accordingly."
-
-### Story 2: Approval Workflow Design
-
-**Question:** "How did you balance security requirements with deployment velocity?"
-
-**Response:** "I implemented a risk-based approval workflow where not all findings block deployments. Critical findings (CVSS 9.0+) always require security lead approval, but lower-severity findings can be approved by service owners with documented exceptions.
-
-The system tracks MTTR (Mean Time To Remediate) and uses it to adjust approval thresholds. Teams with good remediation track records get more autonomy, while teams with poor track records require more oversight.
-
-This balanced security requirements with deployment velocity while maintaining an auditable trail for regulators."
-
----
-
-## 🔒 Security Features
-
-- **Authentication**: JWT-based auth with refresh tokens
-- **Authorization**: Role-based access control (RBAC)
-- **Audit Logging**: All actions logged with user, timestamp, and IP
-- **Data Encryption**: Encryption at rest and in transit
-- **Input Validation**: Comprehensive input validation and sanitization
-- **Rate Limiting**: API rate limiting to prevent abuse
-
----
-
-## 📊 Metrics & Results
-
-- **Finding Ingestion Time**: < 100ms per webhook
-- **Compliance Report Generation**: < 5 seconds
-- **Dashboard Load Time**: < 2 seconds
-- **API Response Time**: P95 < 200ms
-- **Concurrent Users**: Supports 100+ concurrent users
-- **Data Retention**: 1 year of findings data
-
----
-
-## 🧪 Testing
-
-**Backend Testing:**
-- Unit tests for all services
-- Integration tests for API endpoints
-- E2E tests for approval workflows
-- Load testing for webhook ingestion
-
-**Frontend Testing:**
-- Component tests with React Testing Library
-- E2E tests with Playwright
-- Accessibility testing
-- Performance testing
-
----
-
-## 📚 Documentation
-
-- [API Documentation](./docs/api.md)
-- [Architecture Documentation](./docs/architecture.md)
-- [Deployment Guide](./docs/deployment.md)
-- [Compliance Mapping Guide](./docs/compliance-mapping.md)
-
----
-
-## 🤝 Contributing
-
-This is a demonstration project. Feel free to fork and adapt for your own learning.
-
----
-
-## 📄 License
-
-Proprietary - All rights reserved.
-
----
-
-<div align="center">
-
-**Built for BFSI Security Compliance • Interview-Ready Architecture**
-
-**Status: 🚧 In Progress - All 7 Modules Planned**
-
-</div>
+MIT

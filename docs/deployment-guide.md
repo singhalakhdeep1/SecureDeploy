@@ -78,7 +78,7 @@ npm run dev
 
 - Frontend: http://localhost:3000
 - Backend API: http://localhost:3001
-- API Documentation: http://localhost:3001/api
+- API Documentation: http://localhost:3001/api/docs
 - PostgreSQL: localhost:5432
 - Redis: localhost:6379
 

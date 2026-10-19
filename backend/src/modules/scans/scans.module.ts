@@ -1,10 +1,13 @@
 import { Module } from '@nestjs/common';
-import { ScansService } from './scans.service';
 import { ScansController } from './scans.controller';
+import { ScansService } from './scans.service';
+import { SbomService } from './sbom.service';
+import { FindingsModule } from '../findings/findings.module';
 
 @Module({
-    controllers: [ScansController],
-    providers: [ScansService],
-    exports: [ScansService],
+  imports: [FindingsModule],
+  controllers: [ScansController],
+  providers: [ScansService, SbomService],
+  exports: [ScansService, SbomService],
 })
-export class ScansModule { }
+export class ScansModule {}

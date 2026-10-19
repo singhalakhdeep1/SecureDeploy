@@ -1,53 +1,62 @@
-import { Controller, Get, Post, Body, Param, Query, UseGuards } from '@nestjs/common';
-import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
+import { Body, Controller, Get, HttpCode, Param, Patch, Post, Query } from '@nestjs/common';
+import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { FindingsService } from './findings.service';
-import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
+import { CurrentUser, Roles, type AuthUser } from '../../common/auth/decorators';
+import { FindingsQueryDto, IngestFindingsDto, ResolveFindingDto, UpdateFindingStatusDto } from './dto/ingest-findings.dto';
 
 @ApiTags('findings')
 @Controller('findings')
-@UseGuards(JwtAuthGuard)
 @ApiBearerAuth()
 export class FindingsController {
   constructor(private readonly findingsService: FindingsService) {}
 
   @Post('ingest')
-  @ApiOperation({ summary: 'Ingest security scan results from CI/CD pipeline' })
-  ingestFindings(@Body() ingestDto: any) {
-    return this.findingsService.ingestFindings(ingestDto);
+  @Roles('ADMIN', 'SECURITY_LEAD')
+  @ApiOperation({ summary: 'Ingest security scan results (normalized findings or raw scanner JSON)' })
+  ingestFindings(@Body() dto: IngestFindingsDto, @CurrentUser() user: AuthUser) {
+    return this.findingsService.ingestFindings(dto, user.email);
   }
 
   @Get()
-  @ApiOperation({ summary: 'Get all findings with filters' })
-  findAll(
-    @Query('service') service?: string,
-    @Query('environment') environment?: string,
-    @Query('severity') severity?: string,
-    @Query('status') status?: string,
-  ) {
-    return this.findingsService.findAll({ service, environment, severity, status });
-  }
-
-  @Get(':id')
-  @ApiOperation({ summary: 'Get finding by ID' })
-  findOne(@Param('id') id: string) {
-    return this.findingsService.findOne(id);
-  }
-
-  @Post(':id/resolve')
-  @ApiOperation({ summary: 'Mark finding as resolved' })
-  resolve(@Param('id') id: string, @Body('resolvedBy') resolvedBy: string) {
-    return this.findingsService.resolveFinding(id, resolvedBy);
+  @ApiOperation({ summary: 'List findings with filters and pagination' })
+  findAll(@Query() query: FindingsQueryDto, @CurrentUser() user: AuthUser) {
+    return this.findingsService.findAll(query, user);
   }
 
   @Get('stats/summary')
-  @ApiOperation({ summary: 'Get findings summary statistics' })
-  getStats() {
-    return this.findingsService.getStats();
+  @ApiOperation({ summary: 'Findings summary statistics' })
+  getStats(@CurrentUser() user: AuthUser) {
+    return this.findingsService.getStats(user);
   }
 
   @Get('stats/mttr')
-  @ApiOperation({ summary: 'Calculate Mean Time To Remediate' })
-  getMTTR() {
-    return this.findingsService.calculateMTTR();
+  @ApiOperation({ summary: 'Mean Time To Remediate (overall and per severity)' })
+  getMTTR(@CurrentUser() user: AuthUser, @Query('days') days?: string) {
+    return this.findingsService.calculateMTTR(user, days ? Number(days) : undefined);
+  }
+
+  @Get('stats/trend')
+  @ApiOperation({ summary: 'New vs resolved findings per day' })
+  getTrend(@CurrentUser() user: AuthUser, @Query('days') days?: string) {
+    return this.findingsService.getTrend(user, Math.min(Number(days) || 30, 365));
+  }
+
+  @Get(':id')
+  @ApiOperation({ summary: 'Get finding by ID (with compliance mappings)' })
+  findOne(@Param('id') id: string, @CurrentUser() user: AuthUser) {
+    return this.findingsService.findOne(id, user);
+  }
+
+  @Post(':id/resolve')
+  @HttpCode(200)
+  @ApiOperation({ summary: 'Mark finding as resolved' })
+  resolve(@Param('id') id: string, @Body() dto: ResolveFindingDto, @CurrentUser() user: AuthUser) {
+    return this.findingsService.resolveFinding(id, user, dto.note);
+  }
+
+  @Patch(':id/status')
+  @ApiOperation({ summary: 'Change finding status (IN_PROGRESS, RESOLVED, IGNORED, FALSE_POSITIVE, OPEN)' })
+  updateStatus(@Param('id') id: string, @Body() dto: UpdateFindingStatusDto, @CurrentUser() user: AuthUser) {
+    return this.findingsService.updateStatus(id, dto.status, user, dto.note);
   }
 }

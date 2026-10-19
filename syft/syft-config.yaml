@@ -19,7 +19,7 @@ spec:
     spec:
       template:
         spec:
-          containers:
+          initContainers:
           - name: syft
             image: anchore/syft:latest
             command:
@@ -36,6 +36,27 @@ spec:
             volumeMounts:
             - name: config
               mountPath: /etc/syft
+            - name: output
+              mountPath: /output
+          containers:
+          - name: upload
+            image: alpine:3.20
+            envFrom:
+            - configMapRef:
+                name: securedeploy-integration
+            - secretRef:
+                name: securedeploy-webhook
+            env:
+            - name: IMAGE_REF
+              value: "your-registry/your-image:latest"
+            command: ["/bin/sh", "-c"]
+            args:
+            - >-
+              apk add --no-cache curl jq >/dev/null &&
+              jq -n --slurpfile doc /output/sbom.json --arg img "$IMAGE_REF" --arg svc "$SERVICE_NAME" '{image:$img, service:$svc, format:"syft-json", document:$doc[0]}' |
+              curl -fsS -X POST "$SECUREDEPLOY_URL/api/webhooks/sbom"
+              -H "Content-Type: application/json" -H "X-Webhook-Secret: $WEBHOOK_SECRET" --data-binary @-
+            volumeMounts:
             - name: output
               mountPath: /output
           volumes:

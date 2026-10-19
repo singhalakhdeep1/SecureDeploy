@@ -6,7 +6,6 @@ metadata:
 data:
   grype.yaml: |
     check-for-app-update: false
-    fail-on-severity: critical
     severity: critical,high
     output: json
 ---
@@ -21,15 +20,16 @@ spec:
     spec:
       template:
         spec:
-          containers:
+          initContainers:
           - name: grype
             image: anchore/grype:latest
             command:
             - grype
-            - image
             - --config=/etc/grype/grype.yaml
-            - --exit-code=1
-            - --severity=CRITICAL,HIGH
+            - -o
+            - json
+            - --file
+            - /output/report.json
             - $(IMAGE_REF)
             env:
             - name: IMAGE_REF
@@ -37,7 +37,32 @@ spec:
             volumeMounts:
             - name: config
               mountPath: /etc/grype
+            - name: output
+              mountPath: /output
+          containers:
+          - name: upload
+            image: alpine:3.20
+            envFrom:
+            - configMapRef:
+                name: securedeploy-integration
+            - secretRef:
+                name: securedeploy-webhook
+            env:
+            - name: IMAGE_REF
+              value: "your-registry/your-image:latest"
+            command: ["/bin/sh", "-c"]
+            args:
+            - >-
+              apk add --no-cache curl jq >/dev/null &&
+              jq -n --slurpfile raw /output/report.json --arg img "$IMAGE_REF" --arg svc "$SERVICE_NAME" --arg env "$ENVIRONMENT" '{tool:"grype", scanId:("grype-cron-" + (now|tostring)), service:$svc, environment:$env, fullScan:true, raw:$raw[0]}' |
+              curl -fsS -X POST "$SECUREDEPLOY_URL/api/webhooks/findings"
+              -H "Content-Type: application/json" -H "X-Webhook-Secret: $WEBHOOK_SECRET" --data-binary @-
+            volumeMounts:
+            - name: output
+              mountPath: /output
           volumes:
+          - name: output
+            emptyDir: {}
           - name: config
             configMap:
               name: grype-config

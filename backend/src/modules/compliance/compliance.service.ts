@@ -1,247 +1,125 @@
-import { Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import type { ComplianceFramework, Prisma } from '@prisma/client';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import { CacheService } from '../../common/services/cache/cache.service';
+import { CONTROLS, FRAMEWORKS, RISK_BY_SEVERITY, controlById, controlsFor, mapFinding } from './catalog';
+
+const OPEN_STATUSES = ['OPEN', 'IN_PROGRESS'] as const;
 
 @Injectable()
 export class ComplianceService {
-  constructor(private prisma: PrismaService) {}
+  constructor(private readonly prisma: PrismaService, private readonly cache: CacheService) {}
 
-  // DPDP Act Compliance Framework
-  private readonly dpdpControls = {
-    DATA_LOCALIZATION: {
-      id: 'DPDP_DATA_LOCALIZATION',
-      title: 'Data Localization Requirements',
-      clause: 'Section 6: Cross-border data transfer restrictions',
-      description: 'Personal data must be stored within India unless exceptions apply',
-    },
-    CONSENT_MANAGEMENT: {
-      id: 'DPDP_CONSENT_MGMT',
-      title: 'Consent Management',
-      clause: 'Section 7: Consent requirements',
-      description: 'Clear, informed consent required for data processing',
-    },
-    BREACH_NOTIFICATION: {
-      id: 'DPDP_BREACH_NOTIFY',
-      title: 'Data Breach Notification',
-      clause: 'Section 10: Breach notification timeline',
-      description: 'Notify authorities within 72 hours of breach discovery',
-    },
-    DATA_RETENTION: {
-      id: 'DPDP_DATA_RETENTION',
-      title: 'Data Retention Policies',
-      clause: 'Section 9: Data retention limits',
-      description: 'Data must be retained only for necessary purposes',
-    },
-    ACCESS_RIGHTS: {
-      id: 'DPDP_ACCESS_RIGHTS',
-      title: 'Data Subject Rights',
-      clause: 'Section 8: Right to access and correction',
-      description: 'Users must be able to access and correct their data',
-    },
-  };
-
-  // RBI Cybersecurity Framework
-  private readonly rbiControls = {
-    ACCESS_CONTROL: {
-      id: 'RBI_ACCESS_CONTROL',
-      title: 'Access Control and Identity Management',
-      clause: 'Section 4.1: Access control',
-      description: 'Implement strong access controls and identity management',
-    },
-    VULNERABILITY_MGMT: {
-      id: 'RBI_VULN_MGMT',
-      title: 'Vulnerability Management',
-      clause: 'Section 4.2: Vulnerability management',
-      description: 'Regular vulnerability scanning and remediation',
-    },
-    INCIDENT_RESPONSE: {
-      id: 'RBI_INCIDENT_RESPONSE',
-      title: 'Incident Response and Monitoring',
-      clause: 'Section 4.3: Incident response',
-      description: 'Establish incident response procedures',
-    },
-    SECURITY_AWARENESS: {
-      id: 'RBI_SECURITY_AWARENESS',
-      title: 'Security Awareness Training',
-      clause: 'Section 4.4: Security training',
-      description: 'Regular security awareness training for staff',
-    },
-    BUSINESS_CONTINUITY: {
-      id: 'RBI_BUSINESS_CONTINUITY',
-      title: 'Business Continuity Planning',
-      clause: 'Section 4.5: Business continuity',
-      description: 'Business continuity and disaster recovery planning',
-    },
-  };
-
-  async getComplianceStatus(framework?: string) {
-    const where = framework ? { framework: framework as any } : {};
-    
-    const mappings = await this.prisma.complianceMapping.findMany({
-      where,
-      include: {
-        finding: true,
-      },
-    });
-
-    const status = {
-      totalControls: 0,
-      compliantControls: 0,
-      nonCompliantFindings: 0,
-      riskScore: 0,
-      byFramework: {},
-    };
-
-    // Group by framework
-    mappings.forEach((mapping) => {
-      if (!status.byFramework[mapping.framework]) {
-        status.byFramework[mapping.framework] = {
-          total: 0,
-          compliant: 0,
-          findings: 0,
-          riskScore: 0,
-        };
-      }
-
-      status.byFramework[mapping.framework].total++;
-      status.byFramework[mapping.framework].findings++;
-      status.byFramework[mapping.framework].riskScore += mapping.riskScore;
-
-      if (mapping.finding.status === 'RESOLVED') {
-        status.byFramework[mapping.framework].compliant++;
-      } else {
-        status.nonCompliantFindings++;
-      }
-    });
-
-    // Calculate overall stats
-    Object.values(status.byFramework).forEach((framework: any) => {
-      status.totalControls += framework.total;
-      status.compliantControls += framework.compliant;
-      status.riskScore += framework.riskScore;
-    });
-
-    status.riskScore = status.totalControls > 0 ? status.riskScore / status.totalControls : 0;
-
-    return status;
+  private framework(framework: string): ComplianceFramework {
+    const f = framework?.toUpperCase();
+    if (!FRAMEWORKS.some((x) => x.id === f)) throw new BadRequestException(`Unknown framework ${framework}. Use one of ${FRAMEWORKS.map((x) => x.id).join(', ')}`);
+    return f as ComplianceFramework;
   }
 
   getFrameworks() {
-    return [
-      {
-        id: 'DPDP_ACT',
-        name: 'DPDP Act (Digital Personal Data Protection)',
-        description: 'Indian data protection law',
-        controls: Object.keys(this.dpdpControls),
-      },
-      {
-        id: 'RBI_CYBERSECURITY',
-        name: 'RBI Cybersecurity Framework',
-        description: 'Reserve Bank of India cybersecurity guidelines',
-        controls: Object.keys(this.rbiControls),
-      },
-      {
-        id: 'ISO_27001',
-        name: 'ISO 27001',
-        description: 'Information security management',
-        controls: [],
-      },
-      {
-        id: 'SOC_2',
-        name: 'SOC 2',
-        description: 'Service organization controls',
-        controls: [],
-      },
-    ];
+    return FRAMEWORKS.map((f) => ({ ...f, controls: controlsFor(f.id).map((c) => c.id) }));
   }
 
-  getControls(framework: string) {
-    switch (framework.toUpperCase()) {
-      case 'DPDP_ACT':
-        return Object.values(this.dpdpControls);
-      case 'RBI_CYBERSECURITY':
-        return Object.values(this.rbiControls);
-      default:
-        return [];
-    }
-  }
-
-  async getFindingMapping(findingId: string) {
-    return this.prisma.complianceMapping.findMany({
-      where: { findingId },
-      include: {
-        finding: true,
-      },
+  /** Controls of a framework with their mapped finding counts. */
+  async getControls(framework: string, service?: string) {
+    const fw = this.framework(framework);
+    const rows = await this.prisma.complianceMapping.groupBy({
+      by: ['controlId'],
+      where: { framework: fw, finding: { status: { in: [...OPEN_STATUSES] }, ...(service ? { service } : {}) } },
+      _count: { _all: true },
+      _max: { riskScore: true },
     });
+    const open = new Map(rows.map((r) => [r.controlId, { count: r._count._all, maxRisk: r._max.riskScore ?? 0 }]));
+    return controlsFor(fw).map((c) => ({
+      ...c,
+      openFindings: open.get(c.id)?.count ?? 0,
+      maxRiskScore: open.get(c.id)?.maxRisk ?? 0,
+      compliant: !open.has(c.id),
+    }));
   }
 
+  /** Persists control mappings for findings (idempotent thanks to the unique index). */
+  async mapFindings(findings: { id: string; tool: string; category: string; severity: Prisma.FindingCreateInput['severity']; title: string; description: string }[]) {
+    const data = findings.flatMap((f) =>
+      mapFinding(f).map((controlId) => {
+        const c = controlById.get(controlId)!;
+        return { findingId: f.id, framework: c.framework, controlId, controlTitle: c.title, clause: c.clause, riskScore: RISK_BY_SEVERITY[f.severity] };
+      }),
+    );
+    if (data.length) await this.prisma.complianceMapping.createMany({ data, skipDuplicates: true });
+    return data.length;
+  }
+
+  /** Control-based score: share of a framework's controls with no open mapped finding. */
   async calculateScore(framework: string, service?: string) {
-    const where: any = { framework: framework as any };
-    if (service) {
-      where.finding = { service };
-    }
-
-    const mappings = await this.prisma.complianceMapping.findMany({
-      where,
-      include: {
-        finding: true,
-      },
+    const fw = this.framework(framework);
+    return this.cache.getOrSetJson(`compliance:score:${fw}:${service ?? '*'}`, async () => {
+      const controls = await this.getControls(fw, service);
+      const mappings = await this.prisma.complianceMapping.findMany({
+        where: { framework: fw, ...(service ? { finding: { service } } : {}) },
+        select: { findingId: true, finding: { select: { status: true } } },
+        distinct: ['findingId'],
+      });
+      const resolved = mappings.filter((m) => !(OPEN_STATUSES as readonly string[]).includes(m.finding.status)).length;
+      const compliant = controls.filter((c) => c.compliant).length;
+      return {
+        framework: fw,
+        service: service ?? null,
+        score: Math.round((compliant / controls.length) * 100),
+        totalControls: controls.length,
+        compliantControls: compliant,
+        totalFindings: mappings.length,
+        resolvedFindings: resolved,
+        openFindings: mappings.length - resolved,
+      };
     });
+  }
 
-    if (mappings.length === 0) {
-      return { score: 100, totalFindings: 0, resolvedFindings: 0 };
-    }
-
-    const resolvedCount = mappings.filter(
-      (m) => m.finding.status === 'RESOLVED'
-    ).length;
-
-    const score = (resolvedCount / mappings.length) * 100;
-
+  async getComplianceStatus(framework?: string, service?: string) {
+    const frameworks = framework ? [this.framework(framework)] : FRAMEWORKS.map((f) => f.id);
+    const byFramework = Object.fromEntries(await Promise.all(frameworks.map(async (fw) => [fw, await this.calculateScore(fw, service)] as const)));
+    const all = Object.values(byFramework);
+    const totalControls = all.reduce((s, f) => s + f.totalControls, 0);
+    const compliantControls = all.reduce((s, f) => s + f.compliantControls, 0);
+    const risk = await this.prisma.complianceMapping.aggregate({
+      where: { finding: { status: { in: [...OPEN_STATUSES] }, ...(service ? { service } : {}) }, ...(framework ? { framework: frameworks[0] } : {}) },
+      _avg: { riskScore: true },
+    });
     return {
-      score: Math.round(score),
-      totalFindings: mappings.length,
-      resolvedFindings: resolvedCount,
-      openFindings: mappings.length - resolvedCount,
+      totalControls,
+      compliantControls,
+      nonCompliantControls: totalControls - compliantControls,
+      overallScore: totalControls ? Math.round((compliantControls / totalControls) * 100) : 100,
+      averageOpenRiskScore: Math.round(risk._avg.riskScore ?? 0),
+      byFramework,
     };
   }
 
-  async mapFindingToCompliance(findingId: string, framework: string) {
-    const finding = await this.prisma.finding.findUnique({
-      where: { id: findingId },
+  async getFindingMapping(findingId: string) {
+    const finding = await this.prisma.finding.findUnique({ where: { id: findingId }, select: { id: true } });
+    if (!finding) throw new NotFoundException('Finding not found');
+    return this.prisma.complianceMapping.findMany({ where: { findingId }, orderBy: [{ framework: 'asc' }, { controlId: 'asc' }] });
+  }
+
+  /** Manual mapping of a finding to a control (e.g. CUSTOM controls by a security lead). */
+  async mapFindingToControl(findingId: string, controlId: string) {
+    const finding = await this.prisma.finding.findUnique({ where: { id: findingId } });
+    if (!finding) throw new NotFoundException('Finding not found');
+    const control = controlById.get(controlId);
+    if (!control) throw new BadRequestException(`Unknown control ${controlId}`);
+    await this.invalidate();
+    return this.prisma.complianceMapping.upsert({
+      where: { findingId_framework_controlId: { findingId, framework: control.framework, controlId } },
+      create: { findingId, framework: control.framework, controlId, controlTitle: control.title, clause: control.clause, riskScore: RISK_BY_SEVERITY[finding.severity] },
+      update: {},
     });
+  }
 
-    if (!finding) {
-      throw new Error('Finding not found');
-    }
+  invalidate() {
+    return this.cache.invalidatePattern('compliance:*');
+  }
 
-    const controls = this.getControls(framework);
-    const mappings = [];
-
-    // Map based on finding type and severity
-    if (finding.severity === 'CRITICAL' || finding.severity === 'HIGH') {
-      // Map to vulnerability management controls
-      const vulnControl = controls.find((c: any) =>
-        c.id.includes('VULN') || c.id.includes('SECURITY')
-      );
-      if (vulnControl) {
-        mappings.push({
-          findingId,
-          framework,
-          controlId: vulnControl.id,
-          controlTitle: vulnControl.title,
-          clause: vulnControl.clause,
-          riskScore: finding.severity === 'CRITICAL' ? 90 : 70,
-        });
-      }
-    }
-
-    // Create mappings
-    for (const mapping of mappings) {
-      await this.prisma.complianceMapping.create({
-        data: mapping,
-      });
-    }
-
-    return mappings;
+  allControls() {
+    return CONTROLS;
   }
 }

@@ -1,69 +1,47 @@
-version: '3.8'
-
 services:
   postgres:
     image: postgres:16-alpine
-    container_name: securedeploy-postgres
     environment:
       POSTGRES_DB: securedeploy
       POSTGRES_USER: securedeploy
-      POSTGRES_PASSWORD: securedeploy_password
-    ports:
-      - "5432:5432"
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-securedeploy_password}
+    ports: ["5432:5432"]
+    volumes: [postgres_data:/var/lib/postgresql/data]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U securedeploy"]
       interval: 10s
-      timeout: 5s
       retries: 5
 
   redis:
     image: redis:7-alpine
-    container_name: securedeploy-redis
-    ports:
-      - "6379:6379"
+    ports: ["6379:6379"]
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
-      timeout: 5s
       retries: 5
 
   backend:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
-    container_name: securedeploy-backend
+    build: { context: ., dockerfile: backend/Dockerfile }
     environment:
-      DATABASE_URL: postgresql://securedeploy:securedeploy_password@postgres:5432/securedeploy
+      DATABASE_URL: postgresql://securedeploy:${POSTGRES_PASSWORD:-securedeploy_password}@postgres:5432/securedeploy
       REDIS_URL: redis://redis:6379
-      JWT_SECRET: your-jwt-secret-key
+      JWT_SECRET: ${JWT_SECRET:-change-me-dev-jwt-secret-0123}
+      WEBHOOK_SECRET: ${WEBHOOK_SECRET:-change-me-dev-webhook-secret}
+      FRONTEND_URL: http://localhost:3000
       PORT: 3001
-    ports:
-      - "3001:3001"
+    ports: ["3001:3001"]
     depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    volumes:
-      - ./backend:/app
-      - /app/node_modules
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    restart: unless-stopped
 
   frontend:
     build:
       context: ./frontend
-      dockerfile: Dockerfile
-    container_name: securedeploy-frontend
-    environment:
-      NEXT_PUBLIC_API_URL: http://localhost:3001/api
-    ports:
-      - "3000:3000"
-    depends_on:
-      - backend
-    volumes:
-      - ./frontend:/app
-      - /app/node_modules
+      args: { NEXT_PUBLIC_API_URL: "http://localhost:3001/api" }
+    ports: ["3000:3000"]
+    depends_on: [backend]
+    restart: unless-stopped
 
 volumes:
   postgres_data:

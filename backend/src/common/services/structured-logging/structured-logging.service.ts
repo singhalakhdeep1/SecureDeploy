@@ -1,13 +1,17 @@
 /**
  * Structured Logging Service for SecureDeploy
- * Implements structured logging with correlation IDs and context
+ * JSON log lines carrying a per-request correlation id and user context (AsyncLocalStorage),
+ * plus audit events that are also persisted to the audit_events table.
  */
 import { Injectable } from '@nestjs/common';
-import { v4 as uuidv4 } from 'uuid';
+import { AsyncLocalStorage } from 'node:async_hooks';
+import { randomUUID } from 'node:crypto';
+import { PrismaService } from '../../prisma/prisma.service';
 
 export interface LogContext {
   correlationId: string;
   userId?: string;
+  userEmail?: string;
   deploymentId?: string;
   requestId?: string;
   ipAddress?: string;
@@ -19,66 +23,79 @@ export interface LogEntry {
   level: string;
   message: string;
   context: LogContext;
-  additionalContext?: Record<string, any>;
+  additionalContext?: Record<string, unknown>;
   error?: string;
 }
 
+const storage = new AsyncLocalStorage<LogContext>();
+
 @Injectable()
 export class StructuredLoggingService {
-  private currentContext: LogContext | null = null;
+  constructor(private readonly prisma: PrismaService) {}
 
-  setContext(context: LogContext): void {
-    this.currentContext = context;
+  /** Runs fn with the given context bound to everything it awaits. */
+  runWithContext<T>(context: LogContext, fn: () => T): T {
+    return storage.run(context, fn);
+  }
+
+  setContext(context: Partial<LogContext>): void {
+    const current = storage.getStore();
+    if (current) Object.assign(current, context);
   }
 
   getContext(): LogContext | null {
-    return this.currentContext;
+    return storage.getStore() ?? null;
   }
 
-  logInformation(message: string, additionalContext?: Record<string, any>): void {
-    const logEntry = this.createLogEntry('Information', message, additionalContext, null);
-    console.log(JSON.stringify(logEntry));
+  logInformation(message: string, additionalContext?: Record<string, unknown>): void {
+    process.stdout.write(JSON.stringify(this.createLogEntry('Information', message, additionalContext)) + '\n');
   }
 
-  logWarning(message: string, additionalContext?: Record<string, any>): void {
-    const logEntry = this.createLogEntry('Warning', message, additionalContext, null);
-    console.warn(JSON.stringify(logEntry));
+  logWarning(message: string, additionalContext?: Record<string, unknown>): void {
+    process.stdout.write(JSON.stringify(this.createLogEntry('Warning', message, additionalContext)) + '\n');
   }
 
-  logError(message: string, error: string, additionalContext?: Record<string, any>): void {
-    const logEntry = this.createLogEntry('Error', message, additionalContext, error);
-    console.error(JSON.stringify(logEntry));
+  logError(message: string, error: string, additionalContext?: Record<string, unknown>): void {
+    process.stderr.write(JSON.stringify(this.createLogEntry('Error', message, additionalContext, error)) + '\n');
   }
 
-  logAuditEvent(eventType: string, description: string, additionalContext?: Record<string, any>): void {
-    const context = { ...additionalContext };
-    context['auditEventType'] = eventType;
-    context['auditDescription'] = description;
-
-    const logEntry = this.createLogEntry('Audit', `AUDIT: ${description}`, context, null);
-    console.log(JSON.stringify(logEntry));
+  /** Logs and persists an audit event (who did what to which entity). */
+  async logAuditEvent(
+    eventType: string,
+    description: string,
+    additionalContext: { actor?: string; entityType?: string; entityId?: string; [k: string]: unknown } = {},
+  ): Promise<void> {
+    const ctx = this.getContext();
+    const { actor, entityType, entityId, ...details } = additionalContext;
+    process.stdout.write(
+      JSON.stringify(this.createLogEntry('Audit', `AUDIT: ${description}`, { auditEventType: eventType, ...additionalContext })) + '\n',
+    );
+    await this.prisma.auditEvent
+      .create({
+        data: {
+          actor: actor ?? ctx?.userEmail ?? 'system',
+          action: eventType,
+          entityType: entityType ?? eventType.split('.')[0],
+          entityId: entityId ?? null,
+          correlationId: ctx?.correlationId,
+          details: { description, ...details } as object,
+        },
+      })
+      .catch((err) => this.logError('audit persist failed', (err as Error).message));
   }
 
   static createCorrelationId(): string {
-    return uuidv4();
+    return randomUUID();
   }
 
-  private createLogEntry(level: string, message: string, additionalContext?: Record<string, any>, error?: string): LogEntry {
-    const context = this.currentContext || this.defaultContext();
-
+  private createLogEntry(level: string, message: string, additionalContext?: Record<string, unknown>, error?: string): LogEntry {
     return {
       timestamp: new Date().toISOString(),
       level,
       message,
-      context,
+      context: this.getContext() ?? { correlationId: StructuredLoggingService.createCorrelationId() },
       additionalContext,
-      error
-    };
-  }
-
-  private defaultContext(): LogContext {
-    return {
-      correlationId: StructuredLoggingService.createCorrelationId()
+      error,
     };
   }
 }

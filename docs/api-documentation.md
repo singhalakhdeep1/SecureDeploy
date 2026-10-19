@@ -6,9 +6,11 @@
 http://localhost:3001/api
 ```
 
+Interactive OpenAPI docs: `http://localhost:3001/api/docs` (always matches the running code).
+
 ## Authentication
 
-All endpoints require JWT authentication except login and register endpoints.
+All endpoints require a JWT (`POST /api/users/login`) except login, register, health and `/api/webhooks/*` (webhook secret). Roles: `ADMIN`, `SECURITY_LEAD`, `DEVELOPER` (sees only owned services), `AUDITOR` (read-only). The first registered account becomes `ADMIN`.
 
 ```
 Authorization: Bearer <token>
@@ -44,12 +46,19 @@ Authorization: Bearer <token>
 }
 ```
 
+Instead of `findings`, send the scanner's native JSON as `raw` (supported: `trivy`, `grype`, `semgrep`, `trufflehog`, `npm-audit`, `kube-bench`, `falco`). With `"fullScan": true`, open findings of the same tool/service/environment that are no longer reported are auto-resolved. Findings are deduplicated by fingerprint; a resolved finding reported again is reopened. Requires `ADMIN` or `SECURITY_LEAD` (pipelines use the webhook below).
+
 **Response:**
 ```json
 {
   "success": true,
-  "ingested": 5,
-  "scanId": "scan-123"
+  "scanId": "scan-123",
+  "received": 5,
+  "ingested": 4,
+  "updated": 1,
+  "reopened": 0,
+  "autoResolved": 0,
+  "complianceMappings": 12
 }
 ```
 
@@ -59,19 +68,25 @@ GET /api/findings?service=api-service&environment=production&severity=CRITICAL&s
 Authorization: Bearer <token>
 ```
 
+Also: `tool`, `category`, `search`, `page`, `limit`.
+
 **Response:**
 ```json
-[
-  {
-    "id": "finding-123",
-    "tool": "trivy",
-    "severity": "CRITICAL",
-    "title": "CVE-2023-1234",
-    "status": "OPEN",
-    "createdAt": "2024-01-15T10:00:00Z"
-  }
-]
+{
+  "data": [{ "id": "finding-123", "tool": "trivy", "severity": "CRITICAL", "title": "CVE-2023-1234", "status": "OPEN", "lastSeenAt": "2026-01-15T10:00:00Z" }],
+  "pagination": { "page": 1, "limit": 50, "total": 1, "totalPages": 1 }
+}
 ```
+
+#### Change Finding Status
+```http
+PATCH /api/findings/:id/status
+{ "status": "FALSE_POSITIVE", "note": "Not reachable: library only used in tests" }
+```
+Developers may set `OPEN`, `IN_PROGRESS`, `RESOLVED` on their services; `IGNORED`/`FALSE_POSITIVE` require a security lead and a note.
+
+#### Trend
+`GET /api/findings/stats/trend?days=30` returns new vs resolved findings per day.
 
 #### Resolve Finding
 ```http
@@ -80,7 +95,7 @@ Content-Type: application/json
 Authorization: Bearer <token>
 
 {
-  "resolvedBy": "developer@example.com"
+  "note": "Upgraded to 2.0.0"
 }
 ```
 
@@ -94,14 +109,13 @@ Authorization: Bearer <token>
 ```json
 {
   "total": 150,
-  "bySeverity": [
-    { "severity": "CRITICAL", "_count": 5 },
-    { "severity": "HIGH", "_count": 20 }
-  ],
-  "byStatus": [
-    { "status": "OPEN", "_count": 100 },
-    { "status": "RESOLVED", "_count": 50 }
-  ]
+  "open": 100,
+  "resolved": 50,
+  "bySeverity": { "CRITICAL": 5, "HIGH": 20 },
+  "openBySeverity": { "CRITICAL": 2, "HIGH": 12 },
+  "byStatus": { "OPEN": 100, "RESOLVED": 50 },
+  "openByService": { "api-service": 40 },
+  "byTool": { "trivy": 90 }
 }
 ```
 
@@ -115,7 +129,8 @@ Authorization: Bearer <token>
 ```json
 {
   "mttrHours": 24.5,
-  "sampleSize": 50
+  "sampleSize": 50,
+  "bySeverity": { "CRITICAL": { "mttrHours": 6.2, "sampleSize": 4 } }
 }
 ```
 
@@ -209,8 +224,7 @@ Authorization: Bearer <token>
   "service": "api-service",
   "environment": "production",
   "version": "v1.2.0",
-  "commitSha": "abc123def456",
-  "requestedBy": "developer@example.com"
+  "commitSha": "abc123def456"
 }
 ```
 
@@ -221,9 +235,11 @@ Authorization: Bearer <token>
   "status": "PENDING",
   "findingsCount": 5,
   "criticalCount": 0,
-  "highCount": 2
+  "highCount": 2,
+  "gate": { "eligible": true, "message": "Deployment eligible for approval" }
 }
 ```
+The requester is taken from the token. Open CRITICAL findings for the service/environment make the request `REJECTED` with `gateBlocked: true`.
 
 #### Approve Deployment
 ```http
@@ -232,9 +248,7 @@ Content-Type: application/json
 Authorization: Bearer <token>
 
 {
-  "approver": "security@example.com",
-  "comments": "All critical findings resolved",
-  "exceptions": ["high-finding-123"]
+  "comments": "All critical findings resolved"
 }
 ```
 
@@ -245,10 +259,20 @@ Content-Type: application/json
 Authorization: Bearer <token>
 
 {
-  "approver": "security@example.com",
   "reason": "Critical findings must be resolved"
 }
 ```
+Approve/reject require `ADMIN` or `SECURITY_LEAD`, and the requester cannot decide on their own request.
+
+#### Grant Exception (gate-blocked deployment)
+```http
+POST /api/approvals/deployments/:id/exception
+{ "findingIds": ["<every open critical finding id>"], "justification": "Compensating WAF rule until patch ships" }
+```
+Moves the deployment back to `PENDING` with the exceptions recorded.
+
+#### Deployed / Rollback
+`POST /api/approvals/deployments/:id/deployed` (from `APPROVED`) and `POST /api/approvals/deployments/:id/rollback` (from `DEPLOYED`).
 
 #### Get Deployment Status
 ```http
@@ -295,22 +319,11 @@ Content-Type: application/json
 {
   "email": "developer@example.com",
   "password": "securePassword123",
-  "name": "John Doe",
-  "role": "DEVELOPER",
-  "services": ["api-service", "frontend-service"]
+  "name": "John Doe"
 }
 ```
 
-**Response:**
-```json
-{
-  "id": "user-123",
-  "email": "developer@example.com",
-  "name": "John Doe",
-  "role": "DEVELOPER",
-  "services": ["api-service", "frontend-service"]
-}
-```
+**Response:** `{ "user": { "id": "...", "role": "DEVELOPER", ... }, "token": "<jwt>" }`. Roles and owned services are set by an admin (`PATCH /api/users/:id/role`, `POST /api/users/:id/services`).
 
 #### Login
 ```http
@@ -338,13 +351,8 @@ Content-Type: application/json
 
 #### Get Profile
 ```http
-POST /api/users/profile
-Content-Type: application/json
+GET /api/users/profile
 Authorization: Bearer <token>
-
-{
-  "userId": "user-123"
-}
 ```
 
 #### Assign Services
@@ -483,4 +491,21 @@ X-Webhook-Secret: your-webhook-secret
 }
 ```
 
-Webhook signature verification using `X-Webhook-Secret` header.
+Authenticate with `X-Webhook-Secret: <WEBHOOK_SECRET>` or `X-Webhook-Signature: sha256=<hex HMAC-SHA256 of the raw body>`. Webhooks are rate limited per source IP (Redis token bucket).
+
+Other webhook endpoints:
+- `POST /api/webhooks/deployments` `{ service, environment, version, commitSha, requestedBy }` requests an approval from a pipeline (returns the gate result).
+- `GET /api/webhooks/deployments/:id` lets the pipeline poll the decision.
+- `POST /api/webhooks/deployments/:id/deployed` reports that an approved release went out.
+- `POST /api/webhooks/sbom` `{ image, service?, format: "spdx-json"|"syft-json"|"cyclonedx-json", document }` stores an SBOM.
+
+The Grype, Syft and kube-bench CronJobs (`grype/`, `syft/`, `kube-bench/`) post their output to these endpoints. Configure them with `k8s/scanner-integration.yaml`.
+
+## Scans
+
+`POST /api/scans/grype`, `/api/scans/trivy`, `/api/scans/sbom` run the scanners on the API host (`{ image, service?, environment? }`, `ADMIN`/`SECURITY_LEAD`). With `service`, results are ingested as findings. Grype returns 422 if critical vulnerabilities are found. `GET /api/scans/sboms` and `GET /api/scans/sboms/:id` list and return stored SBOMs.
+
+## Audit and health
+
+- `GET /api/audit?entityType=&entityId=&action=&actor=` returns the audit trail (`ADMIN`, `SECURITY_LEAD`, `AUDITOR`).
+- `GET /api/health` reports database and Redis status (public).

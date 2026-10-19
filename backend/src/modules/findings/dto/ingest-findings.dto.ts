@@ -1,52 +1,69 @@
-import { IsString, IsArray, IsOptional, IsEnum } from 'class-validator';
-
-export class IngestFindingsDto {
-  @IsString()
-  tool: string; // trivy, semgrep, trufflehog, npm-audit
-
-  @IsString()
-  scanId: string;
-
-  @IsString()
-  service: string;
-
-  @IsString()
-  environment: string;
-
-  @IsArray()
-  findings: FindingDto[];
-}
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { Type } from 'class-transformer';
+import {
+  ArrayMaxSize, IsArray, IsBoolean, IsDefined, IsEnum, IsIn, IsInt, IsNumber, IsOptional, IsString, Matches, MaxLength, Min, ValidateIf, ValidateNested,
+} from 'class-validator';
+import { FindingStatus } from '@prisma/client';
 
 export class FindingDto {
-  @IsString()
-  @IsOptional()
-  severity?: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() severity?: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() @MaxLength(500) title?: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() @MaxLength(10000) description?: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() category?: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() filePath?: string;
+  @ApiPropertyOptional() @IsInt() @IsOptional() lineNumber?: number;
+  @ApiPropertyOptional() @IsString() @IsOptional() cveId?: string;
+  @ApiPropertyOptional() @IsNumber() @IsOptional() cvssScore?: number;
+  @ApiPropertyOptional() @IsString() @IsOptional() packageName?: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() installedVersion?: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() fixedVersion?: string;
+  @ApiPropertyOptional() @IsString() @IsOptional() remediation?: string;
+}
 
-  @IsString()
-  @IsOptional()
-  title?: string;
+const NAME = /^[A-Za-z0-9][A-Za-z0-9._\-/]{0,99}$/;
 
-  @IsString()
-  @IsOptional()
-  description?: string;
+export class IngestFindingsDto {
+  @ApiProperty({ example: 'trivy' }) @IsString() @Matches(/^[a-z0-9-]{2,40}$/i) tool: string;
+  @ApiProperty() @IsString() @MaxLength(200) scanId: string;
+  @ApiProperty() @IsString() @Matches(NAME) service: string;
+  @ApiProperty() @IsString() @Matches(NAME) environment: string;
 
-  @IsString()
-  @IsOptional()
-  filePath?: string;
+  @ApiPropertyOptional({ type: [FindingDto], description: 'Pre-normalized findings' })
+  @ValidateIf((o) => o.raw === undefined)
+  @IsArray()
+  @ArrayMaxSize(10000)
+  @ValidateNested({ each: true })
+  @Type(() => FindingDto)
+  findings?: FindingDto[];
 
-  @IsNumber()
-  @IsOptional()
-  lineNumber?: number;
+  @ApiPropertyOptional({ description: 'Native scanner JSON (trivy, grype, semgrep, trufflehog, npm-audit, kube-bench, falco)' })
+  @ValidateIf((o) => o.findings === undefined)
+  @IsDefined()
+  raw?: unknown;
 
-  @IsString()
+  @ApiPropertyOptional({ description: 'This scan covers everything the tool checks for the service; open findings it no longer reports are auto-resolved' })
   @IsOptional()
-  cveId?: string;
+  @IsBoolean()
+  fullScan?: boolean;
+}
 
-  @IsNumber()
-  @IsOptional()
-  cvssScore?: number;
+export class UpdateFindingStatusDto {
+  @ApiProperty({ enum: FindingStatus }) @IsEnum(FindingStatus) status: FindingStatus;
+  @ApiPropertyOptional() @IsOptional() @IsString() @MaxLength(2000) note?: string;
+}
 
-  @IsString()
-  @IsOptional()
-  remediation?: string;
+export class ResolveFindingDto {
+  @ApiPropertyOptional() @IsOptional() @IsString() @MaxLength(2000) note?: string;
+}
+
+export class FindingsQueryDto {
+  @IsOptional() @IsString() service?: string;
+  @IsOptional() @IsString() environment?: string;
+  @IsOptional() @IsIn(['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'INFO']) severity?: string;
+  @IsOptional() @IsEnum(FindingStatus) status?: FindingStatus;
+  @IsOptional() @IsString() tool?: string;
+  @IsOptional() @IsString() category?: string;
+  @IsOptional() @IsString() @MaxLength(200) search?: string;
+  @IsOptional() @Type(() => Number) @IsInt() @Min(1) page?: number;
+  @IsOptional() @Type(() => Number) @IsInt() @Min(1) limit?: number;
 }

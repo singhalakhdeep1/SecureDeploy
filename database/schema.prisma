@@ -1,8 +1,8 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
+// SecureDeploy data model (PostgreSQL). Migrations live in database/migrations.
 
 generator client {
   provider = "prisma-client-js"
+  binaryTargets = ["native", "linux-musl-openssl-3.0.x"]
 }
 
 datasource db {
@@ -50,80 +50,96 @@ enum DeploymentStatus {
 }
 
 model User {
-  id            String   @id @default(cuid())
-  email         String   @unique
-  password      String
-  name          String
-  role          Role     @default(DEVELOPER)
-  services      String[] // Services this user owns
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  id        String   @id @default(cuid())
+  email     String   @unique
+  password  String
+  name      String
+  role      Role     @default(DEVELOPER)
+  services  String[] // Services this user owns (developers only see these)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
-  approvals     Approval[]
+  approvals Approval[]
+
   @@map("users")
 }
 
 model Finding {
-  id              String          @id @default(cuid())
-  tool            String          // trivy, semgrep, trufflehog, npm-audit
-  scanId          String
-  service         String
-  environment     String
-  severity        FindingSeverity
-  status          FindingStatus   @default(OPEN)
-  title           String
-  description     String
-  filePath        String?
-  lineNumber      Int?
-  cveId           String?
-  cvssScore       Float?
-  remediation     String?
-  resolvedAt      DateTime?
-  resolvedBy      String?
-  createdAt       DateTime        @default(now())
-  updatedAt       DateTime        @updatedAt
+  id          String          @id @default(cuid())
+  // Stable hash of tool + service + environment + identity of the issue; dedupes re-scans.
+  fingerprint String          @unique
+  tool        String // trivy, grype, semgrep, trufflehog, npm-audit, kube-bench, ...
+  category    String          @default("vulnerability") // vulnerability | secret | code | misconfiguration
+  scanId      String
+  service     String
+  environment String
+  severity    FindingSeverity
+  status      FindingStatus   @default(OPEN)
+  title       String
+  description String
+  filePath    String?
+  lineNumber  Int?
+  cveId       String?
+  cvssScore   Float?
+  packageName String?
+  installedVersion String?
+  fixedVersion String?
+  remediation String?
+  statusNote  String?
+  resolvedAt  DateTime?
+  resolvedBy  String?
+  firstSeenAt DateTime        @default(now())
+  lastSeenAt  DateTime        @default(now())
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
 
   complianceMappings ComplianceMapping[]
 
   @@index([service, environment])
   @@index([severity, status])
+  @@index([tool, service, environment])
   @@map("findings")
 }
 
 model ComplianceMapping {
-  id              String              @id @default(cuid())
-  findingId       String
-  finding         Finding             @relation(fields: [findingId], references: [id])
-  framework       ComplianceFramework
-  controlId       String
-  controlTitle    String
-  clause          String?
-  riskScore       Int                 @default(50)
-  createdAt       DateTime            @default(now())
+  id           String              @id @default(cuid())
+  findingId    String
+  finding      Finding             @relation(fields: [findingId], references: [id], onDelete: Cascade)
+  framework    ComplianceFramework
+  controlId    String
+  controlTitle String
+  clause       String?
+  riskScore    Int                 @default(50)
+  createdAt    DateTime            @default(now())
 
+  @@unique([findingId, framework, controlId])
   @@index([framework, controlId])
   @@map("compliance_mappings")
 }
 
 model Deployment {
-  id              String          @id @default(cuid())
+  id              String           @id @default(cuid())
   service         String
   environment     String
   version         String
   commitSha       String
   status          DeploymentStatus @default(PENDING)
   requestedBy     String
-  requestedAt     DateTime        @default(now())
+  requestedAt     DateTime         @default(now())
   approvedBy      String?
   approvedAt      DateTime?
   rejectionReason String?
+  // True when the automated gate (open critical findings) rejected the request.
+  gateBlocked     Boolean          @default(false)
   deployedAt      DateTime?
-  findingsCount   Int             @default(0)
-  criticalCount   Int             @default(0)
-  highCount       Int             @default(0)
-  exceptions      String[]        @default([])
+  rolledBackAt    DateTime?
+  findingsCount   Int              @default(0)
+  criticalCount   Int              @default(0)
+  highCount       Int              @default(0)
+  exceptions      String[]         @default([]) // finding ids accepted as exceptions
+  exceptionReason String?
 
-  approvals       Approval[]
+  approvals Approval[]
 
   @@index([service, environment])
   @@index([status])
@@ -131,14 +147,14 @@ model Deployment {
 }
 
 model Approval {
-  id              String      @id @default(cuid())
-  deploymentId    String
-  deployment      Deployment  @relation(fields: [deploymentId], references: [id])
-  approverId      String
-  approver        User        @relation(fields: [approverId], references: [id])
-  decision        String      // approved, rejected, exception
-  comments        String?
-  createdAt       DateTime    @default(now())
+  id           String     @id @default(cuid())
+  deploymentId String
+  deployment   Deployment @relation(fields: [deploymentId], references: [id], onDelete: Cascade)
+  approverId   String
+  approver     User       @relation(fields: [approverId], references: [id])
+  decision     String // approved | rejected | exception
+  comments     String?
+  createdAt    DateTime   @default(now())
 
   @@index([deploymentId])
   @@index([approverId])
@@ -146,20 +162,50 @@ model Approval {
 }
 
 model ComplianceReport {
-  id              String          @id @default(cuid())
+  id              String              @id @default(cuid())
   title           String
   framework       ComplianceFramework
   startDate       DateTime
   endDate         DateTime
   generatedBy     String
-  generatedAt     DateTime        @default(now())
+  generatedAt     DateTime            @default(now())
   findingsCount   Int
   resolvedCount   Int
   criticalCount   Int
   highCount       Int
   complianceScore Float
   pdfUrl          String?
+  pdf             Bytes?
 
   @@index([framework, startDate])
   @@map("compliance_reports")
+}
+
+model Sbom {
+  id             String   @id @default(cuid())
+  image          String
+  service        String?
+  format         String // spdx-json | syft-json | cyclonedx-json
+  componentCount Int
+  document       Json
+  createdBy      String
+  createdAt      DateTime @default(now())
+
+  @@index([image])
+  @@map("sboms")
+}
+
+model AuditEvent {
+  id            String   @id @default(cuid())
+  actor         String // user email, "webhook" or "scanner"
+  action        String // e.g. deployment.approved
+  entityType    String
+  entityId      String?
+  correlationId String?
+  details       Json?
+  createdAt     DateTime @default(now())
+
+  @@index([entityType, entityId])
+  @@index([createdAt])
+  @@map("audit_events")
 }

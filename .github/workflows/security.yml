@@ -18,7 +18,7 @@ jobs:
 
       - name: Build Docker image
         run: |
-          docker build -t securedeploy:${{ github.sha }} -f backend/Dockerfile backend/
+          docker build -t securedeploy:${{ github.sha }} -f backend/Dockerfile .
 
       - name: Install Grype
         run: |
@@ -79,3 +79,14 @@ jobs:
           else
             echo "No Kubernetes deployment found, skipping kube-bench"
           fi
+
+      - name: Report Grype results to SecureDeploy
+        if: always()
+        env:
+          SECUREDEPLOY_URL: ${{ secrets.SECUREDEPLOY_URL }}
+          WEBHOOK_SECRET: ${{ secrets.SECUREDEPLOY_WEBHOOK_SECRET }}
+        run: |
+          if [ -z "$SECUREDEPLOY_URL" ] || [ ! -s grype-results.json ]; then echo "SecureDeploy not configured, skipping"; exit 0; fi
+          jq -n --slurpfile raw grype-results.json --arg sha "${{ github.sha }}" \
+            '{tool:"grype", scanId:("ci-" + $sha), service:"securedeploy", environment:"production", fullScan:true, raw:$raw[0]}' |
+          curl -fsS -X POST "$SECUREDEPLOY_URL/api/webhooks/findings" -H "Content-Type: application/json" -H "X-Webhook-Secret: $WEBHOOK_SECRET" --data-binary @-
